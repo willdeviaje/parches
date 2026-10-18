@@ -4,7 +4,7 @@ class ParchesRepository {
   final SupabaseClient _client;
   ParchesRepository(this._client);
 
-  // ===== PARCHES =====
+  // PARCHES
   Future<List<Map<String, dynamic>>> getParches() async {
     final res = await _client.from('parches').select().order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(res);
@@ -16,12 +16,10 @@ class ParchesRepository {
   }
 
   Future<void> deleteParche(String id) async {
-    try { await _client.from('gastos').delete().eq('parche_id', id); } catch (_) {}
-    try { await _client.from('miembros').delete().eq('parche_id', id); } catch (_) {}
     await _client.from('parches').delete().eq('id', id);
   }
 
-  // ===== MIEMBROS =====
+  // MIEMBROS - ahora con constraint único
   Future<List<Map<String, dynamic>>> getMiembros(String parcheId) async {
     final res = await _client.from('miembros').select().eq('parche_id', parcheId).order('created_at');
     return List<Map<String, dynamic>>.from(res);
@@ -30,18 +28,27 @@ class ParchesRepository {
   Future<void> addMiembro({required String parcheId, required String nombre}) async {
     final limpio = nombre.trim();
     if (limpio.isEmpty) throw Exception('El nombre no puede estar vacío');
-    final existentes = await _client.from('miembros').select('id,nombre').eq('parche_id', parcheId).ilike('nombre', limpio);
-    if (existentes.isNotEmpty) throw Exception('Ya existe un miembro con el nombre "$limpio"');
-    await _client.from('miembros').insert({'parche_id': parcheId, 'nombre': limpio});
+    try {
+      await _client.from('miembros').insert({'parche_id': parcheId, 'nombre': limpio});
+    } on PostgrestException catch (e) {
+      if (e.code == '23505') {
+        throw Exception('Ya existe un miembro con el nombre "$limpio"');
+      }
+      rethrow;
+    }
   }
 
   Future<void> deleteMiembro(String id) async {
     await _client.from('miembros').delete().eq('id', id);
   }
 
-  // ===== GASTOS - CORREGIDO CON TUS COLUMNAS REALES =====
+  // GASTOS - NORMALIZADO
   Future<List<Map<String, dynamic>>> getGastos(String parcheId) async {
-    final res = await _client.from('gastos').select().eq('parche_id', parcheId).order('created_at', ascending: false);
+    final res = await _client
+        .from('gastos')
+        .select('*, pagador:miembros!gastos_pagado_por_id_fkey(nombre), participantes:gastos_participantes(miembro_id, monto_a_pagar_cop, miembro:miembros(nombre))')
+        .eq('parche_id', parcheId)
+        .order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(res);
   }
 
@@ -50,61 +57,118 @@ class ParchesRepository {
     required String descripcion,
     required double monto,
     required String moneda,
-    required String pagadoPor,
     required String pagadoPorId,
-    List<String>? participantesIds,
+    required List<String> participantesIds,
   }) async {
-    // Mapeo a tus columnas reales
-    final payload = {
+    final montoCop = monto.toInt(); // TODO: luego conversión real por moneda
+
+    // 1. Crear gasto
+    final gasto = await _client.from('gastos').insert({
       'parche_id': parcheId,
       'descripcion': descripcion,
       'monto_original': monto,
       'moneda': moneda,
-      'monto_cop': monto.toInt(), // por ahora COP = original, luego metemos conversión
-      'quien_pago': pagadoPor,
+      'monto_cop': montoCop,
+      'pagado_por_id': pagadoPorId,
+      'quien_pago': '', // dejamos vacío, ya no se usa pero columna existe
       'categoria': 'general',
-    };
+    }).select().single();
 
-    await _client.from('gastos').insert(payload);
+    // 2. Crear divisiones
+    final porPersona = (montoCop / participantesIds.length).floor();
+    final resto = montoCop - (porPersona * participantesIds.length);
+    
+    final participantesRows = participantesIds.asMap().entries.map((entry) {
+      final idx = entry.key;
+      final miembroId = entry.value;
+      return {
+        'gasto_id': gasto['id'],
+        'miembro_id': miembroId,
+        'monto_a_pagar_cop': porPersona + (idx == 0 ? resto : 0), // resto al primero
+      };
+    }).toList();
+
+    await _client.from('gastos_participantes').insert(participantesRows);
   }
 
   Future<void> deleteGasto(String id) async {
     await _client.from('gastos').delete().eq('id', id);
   }
 
-  // ===== BALANCE - usando tus columnas reales =====
-  Map<String, double> calcularBalance(List<Map<String, dynamic>> miembros, List<Map<String, dynamic>> gastos) {
-    final pagado = <String, double>{};
-    final debe = <String, double>{};
-    for (final m in miembros) {
-      final nombre = m['nombre'] as String;
-      pagado[nombre] = 0;
-      debe[nombre] = 0;
+  // BALANCE NORMALIZADO - lee de la tabla intermedia
+  Future<Map<String, dynamic>> calcularBalanceDetallado(String parcheId) async {
+    final miembros = await getMiembros(parcheId);
+    final gastos = await _client.from('gastos').select().eq('parche_id', parcheId);
+    final participantes = await _client.from('gastos_participantes').select('*, gasto:gastos!inner(parche_id)').eq('gasto.parche_id', parcheId);
+
+    final pagado = <String, int>{};
+    final debe = <String, int>{};
+    final idANombre = {for (var m in miembros) m['id'] as String: m['nombre'] as String};
+
+    for (var m in miembros) {
+      pagado[m['id'] as String] = 0;
+      debe[m['id'] as String] = 0;
     }
 
-    for (final g in gastos) {
-      // tu columna real es monto_original o monto_cop
-      final monto = (g['monto_original'] as num? ?? g['monto_cop'] as num? ?? 0).toDouble();
-      final pagador = g['quien_pago'] as String? ?? '';
-      if (pagador.isEmpty) continue;
-
-      // Por ahora divide entre todos los miembros actuales
-      final participantes = miembros.map((m) => m['nombre'] as String).toList();
-      if (participantes.isEmpty) continue;
-      final porPersona = monto / participantes.length;
-
-      pagado[pagador] = (pagado[pagador] ?? 0) + monto;
-      for (final p in participantes) {
-        if (debe.containsKey(p)) {
-          debe[p] = debe[p]! + porPersona;
-        }
+    for (var g in gastos) {
+      final pagadorId = g['pagado_por_id'] as String?;
+      if (pagadorId != null && pagado.containsKey(pagadorId)) {
+        pagado[pagadorId] = pagado[pagadorId]! + (g['monto_cop'] as int);
       }
     }
 
-    final balance = <String, double>{};
-    for (final nombre in pagado.keys) {
-      balance[nombre] = pagado[nombre]! - (debe[nombre] ?? 0);
+    for (var p in participantes) {
+      final miembroId = p['miembro_id'] as String;
+      if (debe.containsKey(miembroId)) {
+        debe[miembroId] = debe[miembroId]! + (p['monto_a_pagar_cop'] as int);
+      }
     }
-    return balance;
+
+    // balance por id
+    final balancePorId = <String, int>{};
+    for (var id in pagado.keys) {
+      balancePorId[id] = pagado[id]! - debe[id]!;
+    }
+
+    // Convertir a nombre para UI
+    final balancePorNombre = <String, int>{};
+    for (var entry in balancePorId.entries) {
+      final nombre = idANombre[entry.key] ?? entry.key;
+      balancePorNombre[nombre] = entry.value;
+    }
+
+    // Calcular transferencias mínimas para saldar (quien le paga a quien)
+    final deudores = balancePorId.entries.where((e) => e.value < 0).toList()..sort((a,b) => a.value.compareTo(b.value));
+    final acreedores = balancePorId.entries.where((e) => e.value > 0).toList()..sort((a,b) => b.value.compareTo(a.value));
+
+    final transferencias = <Map<String, dynamic>>[];
+    int i = 0, j = 0;
+    final deudoresCopy = deudores.map((e) => MapEntry(e.key, e.value)).toList();
+    final acreedoresCopy = acreedores.map((e) => MapEntry(e.key, e.value)).toList();
+
+    while (i < deudoresCopy.length && j < acreedoresCopy.length) {
+      final deudor = deudoresCopy[i];
+      final acreedor = acreedoresCopy[j];
+      final monto = (-deudor.value).clamp(0, acreedor.value);
+      if (monto > 0) {
+        transferencias.add({
+          'de': idANombre[deudor.key],
+          'de_id': deudor.key,
+          'a': idANombre[acreedor.key],
+          'a_id': acreedor.key,
+          'monto': monto,
+        });
+        deudoresCopy[i] = MapEntry(deudor.key, deudor.value + monto);
+        acreedoresCopy[j] = MapEntry(acreedor.key, acreedor.value - monto);
+      }
+      if (deudoresCopy[i].value == 0) i++;
+      if (acreedoresCopy[j].value == 0) j++;
+    }
+
+    return {
+      'balance': balancePorNombre,
+      'balancePorId': balancePorId,
+      'transferencias': transferencias,
+    };
   }
 }

@@ -1,7 +1,62 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
 .dart_tool/
-.build/
-pubspec.lock
-android/
-ios/
-.flutter-plugins-dependencies
 .flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+build/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Exceptions to above rules.
+!/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
+
+# ============================================
+# PARCHES - CUSTOM RULES (ENGLISH STANDARD)
+# ============================================
+*_1.dart
+*_2.dart
+*_3.dart
+*__1.dart
+
+.env
+.env.local
+.env.development
+.env.production
+supabase/.temp/
+
+# Estos NO van en gitignore de una APP:
+# NO pongas android/
+# NO pongas ios/
+# NO pongas pubspec.lock

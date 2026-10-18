@@ -1,59 +1,83 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../gastos/logic/balance_calculator.dart';
 
 class ParchesRepository {
-  SupabaseClient get client => Supabase.instance.client;
+  final SupabaseClient _client;
+  ParchesRepository(this._client);
 
+  // ===== PARCHES =====
   Future<List<Map<String, dynamic>>> getParches() async {
-    final data = await client.from('parches').select().order('created_at', ascending: false);
-    return List<Map<String, dynamic>>.from(data);
+    final res = await _client.from('parches').select().order('created_at', ascending: false);
+    return List<Map<String, dynamic>>.from(res);
   }
 
-  Stream<List<Map<String, dynamic>>> watchParches() {
-    return client.from('parches').stream(primaryKey: ['id']).order('created_at', ascending: false);
+  Future<Map<String, dynamic>> createParche(String nombre) async {
+    final res = await _client.from('parches').insert({'nombre': nombre.trim()}).select().single();
+    return res;
   }
 
-  Future<String> crearParche(String nombre) async {
-    final res = await client.from('parches').insert({'nombre': nombre, 'tipo': 'corto'}).select('id').single();
-    return res['id'] as String;
+  Future<void> deleteParche(String id) async {
+    // Primero borra dependencias si no tienes cascade en DB
+    await _client.from('gastos').delete().eq('parche_id', id);
+    await _client.from('miembros').delete().eq('parche_id', id);
+    await _client.from('parches').delete().eq('id', id);
   }
 
-  Future<void> addMiembro(String parcheId, String nombre) async {
-    await client.from('miembros').insert({'parche_id': parcheId, 'nombre': nombre.trim()});
+  // ===== MIEMBROS =====
+  Future<List<Map<String, dynamic>>> getMiembros(String parcheId) async {
+    final res = await _client.from('miembros').select().eq('parche_id', parcheId).order('created_at');
+    return List<Map<String, dynamic>>.from(res);
   }
 
-  Stream<List<Map<String, dynamic>>> watchMiembros(String parcheId) {
-    return client.from('miembros').stream(primaryKey: ['id']).eq('parche_id', parcheId).order('created_at');
+  Future<void> addMiembro({required String parcheId, required String nombre}) async {
+    final limpio = nombre.trim();
+    if (limpio.isEmpty) throw Exception('El nombre no puede estar vacío');
+
+    // Validación anti-duplicado case-insensitive
+    final existentes = await _client
+        .from('miembros')
+        .select('id,nombre')
+        .eq('parche_id', parcheId)
+        .ilike('nombre', limpio);
+
+    if (existentes.isNotEmpty) {
+      throw Exception('Ya existe un miembro con el nombre "$limpio"');
+    }
+
+    await _client.from('miembros').insert({
+      'parche_id': parcheId,
+      'nombre': limpio,
+    });
   }
 
-  Stream<List<Map<String, dynamic>>> watchGastos(String parcheId) {
-    return client.from('gastos').stream(primaryKey: ['id']).eq('parche_id', parcheId).order('created_at', ascending: false);
+  Future<void> deleteMiembro(String id) async {
+    await _client.from('miembros').delete().eq('id', id);
+  }
+
+  // ===== GASTOS =====
+  Future<List<Map<String, dynamic>>> getGastos(String parcheId) async {
+    final res = await _client.from('gastos').select().eq('parche_id', parcheId).order('created_at', ascending: false);
+    return List<Map<String, dynamic>>.from(res);
   }
 
   Future<void> addGasto({
     required String parcheId,
     required String descripcion,
-    required num montoOriginal,
+    required double monto,
     required String moneda,
-    required String quienPago,
-    String categoria = 'general',
+    required String pagadoPor,
+    required String pagadoPorId,
   }) async {
-    final montoCop = BalanceCalculator.toCop(montoOriginal, moneda);
-    await client.from('gastos').insert({
+    await _client.from('gastos').insert({
       'parche_id': parcheId,
-      'descripcion': descripcion,
-      'monto_original': montoOriginal,
+      'descripcion': descripcion.trim(),
+      'monto': monto,
       'moneda': moneda,
-      'monto_cop': montoCop,
-      'quien_pago': quienPago,
-      'categoria': categoria,
+      'pagado_por': pagadoPor,
+      'pagado_por_id': pagadoPorId,
     });
   }
 
-  Future<Map<String, int>> getTotales(String parcheId) async {
-    final gastos = await client.from('gastos').select('monto_cop').eq('parche_id', parcheId);
-    final miembros = await client.from('miembros').select('id').eq('parche_id', parcheId);
-    final total = (gastos as List).fold<int>(0, (s, g) => s + (g['monto_cop'] as int));
-    return {'total_cop': total, 'total_miembros': (miembros as List).length};
+  Future<void> deleteGasto(String id) async {
+    await _client.from('gastos').delete().eq('id', id);
   }
 }

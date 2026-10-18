@@ -1,121 +1,90 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../data/parches_repository.dart';
 import 'detalle_parche_page.dart';
 
 class HomeParchesPage extends StatefulWidget {
   const HomeParchesPage({super.key});
+
   @override
   State<HomeParchesPage> createState() => _HomeParchesPageState();
 }
 
 class _HomeParchesPageState extends State<HomeParchesPage> {
-  final repo = ParchesRepository();
-  late Future<List<Map<String, dynamic>>> _future;
-  
+  late final ParchesRepository repo;
+  List<Map<String, dynamic>> parches = [];
+  bool loading = true;
+
   @override
   void initState() {
     super.initState();
-    _future = repo.getParches();
+    repo = ParchesRepository(Supabase.instance.client);
+    _refresh();
   }
 
   Future<void> _refresh() async {
-    setState(() {
-      _future = repo.getParches();
-    });
+    setState(() => loading = true);
+    final data = await repo.getParches();
+    if (mounted) {
+      setState(() {
+        parches = data;
+        loading = false;
+      });
+    }
   }
 
-  Future<void> _crearParcheDialog() async {
+  Future<void> _crearParche() async {
     final ctrl = TextEditingController();
     final nombre = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Nuevo Parche'),
-        content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: 'Ej: Pizza Mosquera')),
+      builder: (c) => AlertDialog(
+        title: const Text('Nuevo parche'),
+        content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'Ej: Viaje a Cartagena')),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(context, ctrl.text.trim()), child: const Text('Crear')),
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancelar')),
+          ElevatedButton(onPressed: () => Navigator.pop(c, ctrl.text.trim()), child: const Text('Crear')),
         ],
       ),
     );
-    if (nombre != null && nombre.isNotEmpty) {
-      await repo.crearParche(nombre);
-      _refresh();
-    }
+    if (nombre == null || nombre.isEmpty) return;
+    await repo.createParche(nombre);
+    await _refresh();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Mis Parches'), 
-        centerTitle: false,
-        actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _refresh),
-        ],
-      ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: _future,
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-          if (snap.hasError) return Center(child: Text('Error: ${snap.error}'));
-          final parches = snap.data ?? [];
-          if (parches.isEmpty) {
-            return const Center(child: Text('No hay parches.\nCrea el primero para dividir gastos.', textAlign: TextAlign.center));
-          }
-          return RefreshIndicator(
-            onRefresh: _refresh,
-            child: ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: parches.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (_, i) {
-                final p = parches[i];
-                return _ParcheCard(
-                  nombre: p['nombre'],
-                  id: p['id'],
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DetalleParchePage(parcheId: p['id'], nombre: p['nombre']))).then((_) => _refresh()),
-                );
-              },
+      appBar: AppBar(title: const Text('Parches')),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _refresh,
+              child: parches.isEmpty
+                  ? ListView(children: const [SizedBox(height: 100), Center(child: Text('No hay parches\nDesliza para recargar'))])
+                  : ListView.builder(
+                      itemCount: parches.length,
+                      itemBuilder: (c, i) {
+                        final p = parches[i];
+                        return Card(
+                          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          child: ListTile(
+                            title: Text(p['nombre']),
+                            subtitle: Text('Creado ${p['created_at'].toString().substring(0, 10)}'),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => DetalleParchePage(parche: p)),
+                            ).then((_) => _refresh()),
+                          ),
+                        );
+                      },
+                    ),
             ),
-          );
-        },
-      ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _crearParcheDialog,
-        label: const Text('Nuevo Parche'),
+        onPressed: _crearParche,
         icon: const Icon(Icons.add),
+        label: const Text('Nuevo parche'),
       ),
-    );
-  }
-}
-
-class _ParcheCard extends StatefulWidget {
-  final String id;
-  final String nombre;
-  final VoidCallback onTap;
-  const _ParcheCard({required this.id, required this.nombre, required this.onTap});
-  @override
-  State<_ParcheCard> createState() => _ParcheCardState();
-}
-
-class _ParcheCardState extends State<_ParcheCard> {
-  final repo = ParchesRepository();
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder(
-      future: repo.getTotales(widget.id),
-      builder: (c, snap) {
-        final total = snap.data?['total_cop'] ?? 0;
-        final miembros = snap.data?['total_miembros'] ?? 0;
-        return Card(
-          child: ListTile(
-            title: Text(widget.nombre, style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text('Total: \$$total COP \u2022 $miembros personas'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: widget.onTap,
-          ),
-        );
-      },
     );
   }
 }

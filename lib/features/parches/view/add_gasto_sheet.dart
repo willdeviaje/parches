@@ -6,7 +6,8 @@ import '../../../core/services/currency_service.dart';
 class AddGastoSheet extends StatefulWidget {
   final String parcheId;
   final List<Map<String, dynamic>> miembros;
-  const AddGastoSheet({super.key, required this.parcheId, required this.miembros});
+  final Map<String, dynamic>? gastoExistente;
+  const AddGastoSheet({super.key, required this.parcheId, required this.miembros, this.gastoExistente});
 
   @override
   State<AddGastoSheet> createState() => _AddGastoSheetState();
@@ -24,6 +25,8 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
   Map<String, bool> _dividirEntre = {};
   bool _guardando = false;
 
+  bool get esEdicion => widget.gastoExistente != null;
+
   @override
   void initState() {
     super.initState();
@@ -34,10 +37,30 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
     if (widget.miembros.isNotEmpty) {
       _pagadoPorId = widget.miembros.first['id'] as String;
     }
+
+    if (widget.gastoExistente != null) {
+      final g = widget.gastoExistente!;
+      _descCtrl.text = g['descripcion'] ?? '';
+      _montoCtrl.text = (g['monto_original'] ?? '').toString();
+      _moneda = g['moneda'] ?? 'COP';
+      _pagadoPorId = g['pagado_por_id'] as String? ?? g['pagador_id'] as String? ?? g['pagador']?['id'] as String? ?? _pagadoPorId;
+      _tasaActual = (g['tasa_cambio'] as num?)?.toDouble() ?? 1;
+      
+      // Si es edición, también cargar participantes reales
+      final participantes = g['participantes'] as List? ?? [];
+      if (participantes.isNotEmpty) {
+         _dividirEntre.updateAll((k, v) => false);
+         for (var p in participantes) {
+           final mid = p['miembro_id'] ?? p['miembro']?['id'];
+           if (mid != null) _dividirEntre[mid as String] = true;
+         }
+      }
+    }
     _cargarTasa();
   }
 
   Future<void> _cargarTasa({bool forzar = false}) async {
+    if (esEdicion && !forzar && _tasaActual != null) return;
     setState(() => _cargandoTasa = true);
     try {
       final tasa = forzar
@@ -63,15 +86,27 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
 
     setState(() => _guardando = true);
     try {
-      await _repo.addGasto(
-        parcheId: widget.parcheId,
-        descripcion: _descCtrl.text.trim(),
-        monto: monto,
-        moneda: _moneda,
-        pagadoPorId: _pagadoPorId!,
-        participantesIds: participantesIds,
-        tasaCambio: _tasaActual ?? 1,
-      );
+      if (esEdicion) {
+        await _repo.updateGasto(
+          gastoId: widget.gastoExistente!['id'],
+          descripcion: _descCtrl.text.trim(),
+          monto: monto,
+          moneda: _moneda,
+          pagadoPorId: _pagadoPorId!,
+          participantesIds: participantesIds,
+          tasaCambio: _tasaActual ?? 1,
+        );
+      } else {
+        await _repo.addGasto(
+          parcheId: widget.parcheId,
+          descripcion: _descCtrl.text.trim(),
+          monto: monto,
+          moneda: _moneda,
+          pagadoPorId: _pagadoPorId!,
+          participantesIds: participantesIds,
+          tasaCambio: _tasaActual ?? 1,
+        );
+      }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
@@ -90,7 +125,7 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text('Añadir gasto', style: Theme.of(context).textTheme.titleLarge),
+              Text(esEdicion ? 'Editar gasto' : 'Añadir gasto', style: Theme.of(context).textTheme.titleLarge),
               IconButton(onPressed: () => _cargarTasa(forzar: true), icon: const Icon(Icons.refresh), tooltip: 'Actualizar tasa'),
             ]),
             const SizedBox(height: 12),
@@ -146,7 +181,7 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
               return CheckboxListTile(value: _dividirEntre[id] ?? false, title: Text(m['nombre']), controlAffinity: ListTileControlAffinity.leading, onChanged: (v) => setState(() => _dividirEntre[id] = v ?? false));
             }),
             const SizedBox(height: 12),
-            ElevatedButton(onPressed: _guardando ? null : _guardar, child: _guardando ? const CircularProgressIndicator() : const Text('Guardar gasto')),
+            ElevatedButton(onPressed: _guardando ? null : _guardar, child: _guardando ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Text(esEdicion ? 'Actualizar gasto' : 'Guardar gasto')),
             const SizedBox(height: 20),
           ],
         ),

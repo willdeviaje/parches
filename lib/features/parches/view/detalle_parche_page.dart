@@ -35,7 +35,6 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
   }
 
   String _formatCOP(int v) {
-    // 57500 -> 57.500 | 0 -> 0
     if (v == 0) return '0';
     final abs = v.abs();
     final str = abs.toString().replaceAllMapped(
@@ -238,7 +237,6 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
                         textColor = Colors.red.shade700;
                         subtitle = 'Debe';
                       }
-
                       return Card(
                         color: bgColor,
                         child: ListTile(
@@ -265,7 +263,13 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
                         )),
                   ],
                   const SizedBox(height: 20),
-                  const Text('Gastos', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Gastos', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const Text('Toca para editar', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                    ],
+                  ),
                   const SizedBox(height: 8),
                   if (_gastos.isEmpty)
                     const Text('Sin gastos aún')
@@ -281,10 +285,22 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
 
                       final subtitle = esCop
                           ? "$pagadorNombre • \$${_formatCOP(montoCop)} COP"
-                          : "$pagadorNombre • ${_simbolo(moneda)}${montoOrig.toStringAsFixed(montoOrig % 1 == 0 ? 0 : 2)} $moneda → \$${_formatCOP(montoCop)} COP • Tasa: ${tasa.toStringAsFixed(2)}";
+                          : "$pagadorNombre • ${montoOrig.toStringAsFixed(montoOrig % 1 == 0 ? 0 : 2)} $moneda → \$${_formatCOP(montoCop)} COP • Tasa: ${tasa.toStringAsFixed(2)}";
 
                       return Card(
                         child: ListTile(
+                          onTap: () async {
+                            final result = await showModalBottomSheet<bool>(
+                              context: context,
+                              isScrollControlled: true,
+                              builder: (_) => AddGastoSheet(
+                                parcheId: widget.parche['id'],
+                                miembros: _miembros,
+                                gastoExistente: g,
+                              ),
+                            );
+                            if (result == true) await _cargarTodo();
+                          },
                           title: Text(desc, style: const TextStyle(fontWeight: FontWeight.w600)),
                           subtitle: Text(subtitle),
                           trailing: Row(
@@ -296,7 +312,10 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
                                   decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(8)),
                                   child: Text(moneda, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                                 ),
-                              IconButton(icon: const Icon(Icons.delete_outline, size: 20), onPressed: () => _confirmarBorrarGasto(g))
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, size: 20),
+                                onPressed: () => _confirmarBorrarGasto(g),
+                              )
                             ],
                           ),
                         ),

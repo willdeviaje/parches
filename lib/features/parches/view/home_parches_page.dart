@@ -5,7 +5,6 @@ import 'detalle_parche_page.dart';
 
 class HomeParchesPage extends StatefulWidget {
   const HomeParchesPage({super.key});
-
   @override
   State<HomeParchesPage> createState() => _HomeParchesPageState();
 }

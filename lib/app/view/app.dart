@@ -8,7 +8,7 @@ class App extends StatelessWidget {
     return MaterialApp(
       title: 'Parches',
       theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepOrange)),
-      home: const HomeParchesPage(),
+      home: HomeParchesPage(),
       debugShowCheckedModeBanner: false,
     );
   }

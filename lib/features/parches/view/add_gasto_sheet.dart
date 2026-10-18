@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../data/parches_repository.dart';
+import '../../../core/services/currency_service.dart';
 
 class AddGastoSheet extends StatefulWidget {
   final String parcheId;
@@ -13,10 +14,13 @@ class AddGastoSheet extends StatefulWidget {
 
 class _AddGastoSheetState extends State<AddGastoSheet> {
   late final ParchesRepository _repo;
+  final _currencyService = CurrencyService();
   final _descCtrl = TextEditingController();
   final _montoCtrl = TextEditingController();
   String? _pagadoPorId;
   String _moneda = 'COP';
+  double? _tasaActual;
+  bool _cargandoTasa = false;
   Map<String, bool> _dividirEntre = {};
   bool _guardando = false;
 
@@ -30,21 +34,32 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
     if (widget.miembros.isNotEmpty) {
       _pagadoPorId = widget.miembros.first['id'] as String;
     }
+    _cargarTasa();
+  }
+
+  Future<void> _cargarTasa({bool forzar = false}) async {
+    setState(() => _cargandoTasa = true);
+    try {
+      final tasa = forzar
+          ? await _currencyService.refreshRate(_moneda)
+          : await _currencyService.getRateToCop(_moneda);
+      if (mounted) setState(() { _tasaActual = tasa; });
+    } finally {
+      if (mounted) setState(() => _cargandoTasa = false);
+    }
+  }
+
+  double get _montoCopCalculado {
+    final monto = double.tryParse(_montoCtrl.text.replaceAll(',', '.')) ?? 0;
+    return monto * (_tasaActual ?? 1);
   }
 
   Future<void> _guardar() async {
-    if (_descCtrl.text.trim().isEmpty || _montoCtrl.text.isEmpty || _pagadoPorId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Completa descripción, monto y quien pagó')));
-      return;
-    }
+    if (_descCtrl.text.trim().isEmpty || _montoCtrl.text.isEmpty || _pagadoPorId == null) return;
     final monto = double.tryParse(_montoCtrl.text.replaceAll(',', '.'));
     if (monto == null || monto <= 0) return;
-
     final participantesIds = _dividirEntre.entries.where((e) => e.value).map((e) => e.key).toList();
-    if (participantesIds.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Selecciona al menos 1 persona')));
-      return;
-    }
+    if (participantesIds.isEmpty) return;
 
     setState(() => _guardando = true);
     try {
@@ -55,6 +70,7 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
         moneda: _moneda,
         pagadoPorId: _pagadoPorId!,
         participantesIds: participantesIds,
+        tasaCambio: _tasaActual ?? 1,
       );
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -73,24 +89,54 @@ class _AddGastoSheetState extends State<AddGastoSheet> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Añadir gasto', style: Theme.of(context).textTheme.titleLarge),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('Añadir gasto', style: Theme.of(context).textTheme.titleLarge),
+              IconButton(onPressed: () => _cargarTasa(forzar: true), icon: const Icon(Icons.refresh), tooltip: 'Actualizar tasa'),
+            ]),
             const SizedBox(height: 12),
             TextField(controller: _descCtrl, decoration: const InputDecoration(labelText: 'Descripción', border: OutlineInputBorder())),
             const SizedBox(height: 12),
-            TextField(controller: _montoCtrl, decoration: const InputDecoration(labelText: 'Monto', border: OutlineInputBorder()), keyboardType: TextInputType.number),
+            Row(
+              children: [
+                Expanded(flex: 2, child: TextField(controller: _montoCtrl, decoration: const InputDecoration(labelText: 'Monto', border: OutlineInputBorder()), keyboardType: TextInputType.number, onChanged: (_) => setState(() {}))),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _moneda,
+                    decoration: const InputDecoration(labelText: 'Moneda', border: OutlineInputBorder()),
+                    items: CurrencyService.monedasSoportadas.map((m) => DropdownMenuItem<String>(value: m['code'] as String, child: Text("${m['flag']} ${m['code']}"))).toList(),
+                    onChanged: (v) async {
+                      if (v != null) {
+                        setState(() => _moneda = v);
+                        await _cargarTasa(forzar: true);
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
+              child: _cargandoTasa
+                  ? const Row(children: [SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Text('Buscando tasa en vivo...')])
+                  : Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(child: Text('1 $_moneda = ${_tasaActual?.toStringAsFixed(2)} COP', style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Text('≈ \$${_montoCopCalculado.toStringAsFixed(0)} COP', style: TextStyle(color: Colors.blue.shade700, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+            ),
+            const SizedBox(height: 6),
+            Text('Fuente: open.er-api.com • Actualizado al cambiar moneda', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
               value: _pagadoPorId,
               decoration: const InputDecoration(labelText: '¿Quién pagó?', border: OutlineInputBorder()),
               items: widget.miembros.map((m) => DropdownMenuItem<String>(value: m['id'] as String, child: Text(m['nombre']))).toList(),
               onChanged: (v) => setState(() => _pagadoPorId = v),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              value: _moneda,
-              decoration: const InputDecoration(labelText: 'Moneda', border: OutlineInputBorder()),
-              items: const [DropdownMenuItem(value: 'COP', child: Text('COP')), DropdownMenuItem(value: 'USD', child: Text('USD')), DropdownMenuItem(value: 'THB', child: Text('THB')), DropdownMenuItem(value: 'VND', child: Text('VND'))],
-              onChanged: (v) => setState(() => _moneda = v ?? 'COP'),
             ),
             const SizedBox(height: 16),
             const Text('Dividir entre:', style: TextStyle(fontWeight: FontWeight.bold)),

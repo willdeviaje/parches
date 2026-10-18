@@ -4,7 +4,6 @@ class ParchesRepository {
   final SupabaseClient _client;
   ParchesRepository(this._client);
 
-  // PARCHES
   Future<List<Map<String, dynamic>>> getParches() async {
     final res = await _client.from('parches').select().order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(res);
@@ -19,7 +18,6 @@ class ParchesRepository {
     await _client.from('parches').delete().eq('id', id);
   }
 
-  // MIEMBROS - ahora con constraint único
   Future<List<Map<String, dynamic>>> getMiembros(String parcheId) async {
     final res = await _client.from('miembros').select().eq('parche_id', parcheId).order('created_at');
     return List<Map<String, dynamic>>.from(res);
@@ -31,9 +29,7 @@ class ParchesRepository {
     try {
       await _client.from('miembros').insert({'parche_id': parcheId, 'nombre': limpio});
     } on PostgrestException catch (e) {
-      if (e.code == '23505') {
-        throw Exception('Ya existe un miembro con el nombre "$limpio"');
-      }
+      if (e.code == '23505') throw Exception('Ya existe "$limpio"');
       rethrow;
     }
   }
@@ -42,13 +38,8 @@ class ParchesRepository {
     await _client.from('miembros').delete().eq('id', id);
   }
 
-  // GASTOS - NORMALIZADO
   Future<List<Map<String, dynamic>>> getGastos(String parcheId) async {
-    final res = await _client
-        .from('gastos')
-        .select('*, pagador:miembros!gastos_pagado_por_id_fkey(nombre), participantes:gastos_participantes(miembro_id, monto_a_pagar_cop, miembro:miembros(nombre))')
-        .eq('parche_id', parcheId)
-        .order('created_at', ascending: false);
+    final res = await _client.from('gastos').select('*, pagador:miembros!gastos_pagado_por_id_fkey(nombre), participantes:gastos_participantes(miembro_id, monto_a_pagar_cop, miembro:miembros(nombre))').eq('parche_id', parcheId).order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(res);
   }
 
@@ -59,43 +50,42 @@ class ParchesRepository {
     required String moneda,
     required String pagadoPorId,
     required List<String> participantesIds,
+    required double tasaCambio,
   }) async {
-    final montoCop = monto.toInt(); // TODO: luego conversión real por moneda
+    final montoCop = (monto * tasaCambio).toInt();
 
-    // 1. Crear gasto
     final gasto = await _client.from('gastos').insert({
       'parche_id': parcheId,
       'descripcion': descripcion,
       'monto_original': monto,
       'moneda': moneda,
       'monto_cop': montoCop,
+      'tasa_cambio': tasaCambio,
+      'fecha_tasa': DateTime.now().toIso8601String().substring(0, 10),
       'pagado_por_id': pagadoPorId,
-      'quien_pago': '', // dejamos vacío, ya no se usa pero columna existe
+      'quien_pago': '',
       'categoria': 'general',
     }).select().single();
 
-    // 2. Crear divisiones
     final porPersona = (montoCop / participantesIds.length).floor();
     final resto = montoCop - (porPersona * participantesIds.length);
-    
-    final participantesRows = participantesIds.asMap().entries.map((entry) {
+    final rows = participantesIds.asMap().entries.map((entry) {
       final idx = entry.key;
       final miembroId = entry.value;
       return {
         'gasto_id': gasto['id'],
         'miembro_id': miembroId,
-        'monto_a_pagar_cop': porPersona + (idx == 0 ? resto : 0), // resto al primero
+        'monto_a_pagar_cop': porPersona + (idx == 0 ? resto : 0),
       };
     }).toList();
 
-    await _client.from('gastos_participantes').insert(participantesRows);
+    await _client.from('gastos_participantes').insert(rows);
   }
 
   Future<void> deleteGasto(String id) async {
     await _client.from('gastos').delete().eq('id', id);
   }
 
-  // BALANCE NORMALIZADO - lee de la tabla intermedia
   Future<Map<String, dynamic>> calcularBalanceDetallado(String parcheId) async {
     final miembros = await getMiembros(parcheId);
     final gastos = await _client.from('gastos').select().eq('parche_id', parcheId);
@@ -124,22 +114,16 @@ class ParchesRepository {
       }
     }
 
-    // balance por id
     final balancePorId = <String, int>{};
-    for (var id in pagado.keys) {
-      balancePorId[id] = pagado[id]! - debe[id]!;
-    }
+    for (var id in pagado.keys) balancePorId[id] = pagado[id]! - debe[id]!;
 
-    // Convertir a nombre para UI
     final balancePorNombre = <String, int>{};
     for (var entry in balancePorId.entries) {
-      final nombre = idANombre[entry.key] ?? entry.key;
-      balancePorNombre[nombre] = entry.value;
+      balancePorNombre[idANombre[entry.key] ?? entry.key] = entry.value;
     }
 
-    // Calcular transferencias mínimas para saldar (quien le paga a quien)
-    final deudores = balancePorId.entries.where((e) => e.value < 0).toList()..sort((a,b) => a.value.compareTo(b.value));
-    final acreedores = balancePorId.entries.where((e) => e.value > 0).toList()..sort((a,b) => b.value.compareTo(a.value));
+    final deudores = balancePorId.entries.where((e) => e.value < 0).toList()..sort((a, b) => a.value.compareTo(b.value));
+    final acreedores = balancePorId.entries.where((e) => e.value > 0).toList()..sort((a, b) => b.value.compareTo(a.value));
 
     final transferencias = <Map<String, dynamic>>[];
     int i = 0, j = 0;
@@ -151,13 +135,7 @@ class ParchesRepository {
       final acreedor = acreedoresCopy[j];
       final monto = (-deudor.value).clamp(0, acreedor.value);
       if (monto > 0) {
-        transferencias.add({
-          'de': idANombre[deudor.key],
-          'de_id': deudor.key,
-          'a': idANombre[acreedor.key],
-          'a_id': acreedor.key,
-          'monto': monto,
-        });
+        transferencias.add({'de': idANombre[deudor.key], 'a': idANombre[acreedor.key], 'monto': monto});
         deudoresCopy[i] = MapEntry(deudor.key, deudor.value + monto);
         acreedoresCopy[j] = MapEntry(acreedor.key, acreedor.value - monto);
       }
@@ -165,10 +143,6 @@ class ParchesRepository {
       if (acreedoresCopy[j].value == 0) j++;
     }
 
-    return {
-      'balance': balancePorNombre,
-      'balancePorId': balancePorId,
-      'transferencias': transferencias,
-    };
+    return {'balance': balancePorNombre, 'transferencias': transferencias};
   }
 }

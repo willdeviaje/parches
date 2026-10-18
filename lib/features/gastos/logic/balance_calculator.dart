@@ -14,26 +14,50 @@ class BalanceCalculator {
     return (monto * (tasas[moneda] ?? 1.0)).round();
   }
 
+  // Fase 3 - Soporta división desigual por montos
+  // Si gasto tiene division_tipo='montos' y division_data=[{nombre,monto_cop}], usa eso
+  // Si no, divide igual entre miembros (MVP1)
   static List<Deuda> calcularBalance({
     required List<String> miembros,
     required List<Map<String, dynamic>> gastos,
   }) {
     if (miembros.isEmpty) return [];
-    final total = gastos.fold<int>(0, (s, g) => s + (g['monto_cop'] as int));
-    if (total == 0) return [];
-    final porPersona = total / miembros.length;
+    if (gastos.isEmpty) return [];
 
     final pagadoPor = <String, int>{for (var m in miembros) m: 0};
+    final debePagar = <String, int>{for (var m in miembros) m: 0};
+
     for (var g in gastos) {
       final qp = g['quien_pago'] as String;
+      final montoCop = (g['monto_cop'] as int?) ?? 0;
       if (pagadoPor.containsKey(qp)) {
-        pagadoPor[qp] = pagadoPor[qp]! + (g['monto_cop'] as int);
+        pagadoPor[qp] = pagadoPor[qp]! + montoCop;
+      }
+
+      final divisionTipo = (g['division_tipo'] as String?) ?? 'igual';
+      final divisionData = g['division_data'];
+
+      if (divisionTipo == 'montos' && divisionData is List && divisionData.isNotEmpty) {
+        // División desigual: cada entrada tiene {nombre, monto_cop}
+        for (var entry in divisionData) {
+          final nombre = entry['nombre'] as String?;
+          final monto = entry['monto_cop'] as int? ?? entry['monto'] as int? ?? 0;
+          if (nombre != null && debePagar.containsKey(nombre)) {
+            debePagar[nombre] = debePagar[nombre]! + monto;
+          }
+        }
+      } else {
+        // División igual MVP1
+        final porPersona = montoCop / miembros.length;
+        for (var m in miembros) {
+          debePagar[m] = (debePagar[m]! + porPersona).round();
+        }
       }
     }
 
     final balances = <String, double>{};
     for (var m in miembros) {
-      balances[m] = (pagadoPor[m] ?? 0) - porPersona;
+      balances[m] = (pagadoPor[m] ?? 0).toDouble() - (debePagar[m] ?? 0).toDouble();
     }
 
     final deudores = balances.entries.where((e) => e.value < -0.5).toList()..sort((a,b) => a.value.compareTo(b.value));

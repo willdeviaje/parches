@@ -1,187 +1,194 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../data/parches_repository.dart';
-import '../../../core/services/currency_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../gastos/logic/balance_calculator.dart';
 
 class AddGastoSheet extends StatefulWidget {
   final String parcheId;
-  final List<Map<String, dynamic>> miembros;
-  final Map<String, dynamic>? gastoExistente;
-  const AddGastoSheet({super.key, required this.parcheId, required this.miembros, this.gastoExistente});
-
+  const AddGastoSheet({super.key, required this.parcheId});
   @override
   State<AddGastoSheet> createState() => _AddGastoSheetState();
 }
 
 class _AddGastoSheetState extends State<AddGastoSheet> {
-  late final ParchesRepository _repo;
-  final _currencyService = CurrencyService();
-  final _descCtrl = TextEditingController();
-  final _montoCtrl = TextEditingController();
-  String? _pagadoPorId;
-  String _moneda = 'COP';
-  double? _tasaActual;
-  bool _cargandoTasa = false;
-  Map<String, bool> _dividirEntre = {};
-  bool _guardando = false;
-
-  bool get esEdicion => widget.gastoExistente != null;
+  final repo = ParchesRepository(Supabase.instance.client);
+  final descCtrl = TextEditingController();
+  final montoCtrl = TextEditingController();
+  String moneda = 'COP';
+  String? quienPago;
+  List<String> miembrosNombres = [];
+  
+  // Fase 3 - división desigual por montos
+  bool divisionDesigual = false;
+  Map<String, TextEditingController> divisionCtrls = {};
 
   @override
   void initState() {
     super.initState();
-    _repo = ParchesRepository(Supabase.instance.client);
-    for (final m in widget.miembros) {
-      _dividirEntre[m['id'] as String] = true;
-    }
-    if (widget.miembros.isNotEmpty) {
-      _pagadoPorId = widget.miembros.first['id'] as String;
-    }
+    _loadMiembros();
+  }
 
-    if (widget.gastoExistente != null) {
-      final g = widget.gastoExistente!;
-      _descCtrl.text = g['descripcion'] ?? '';
-      _montoCtrl.text = (g['monto_original'] ?? '').toString();
-      _moneda = g['moneda'] ?? 'COP';
-      _pagadoPorId = g['pagado_por_id'] as String? ?? g['pagador_id'] as String? ?? g['pagador']?['id'] as String? ?? _pagadoPorId;
-      _tasaActual = (g['tasa_cambio'] as num?)?.toDouble() ?? 1;
-      
-      // Si es edición, también cargar participantes reales
-      final participantes = g['participantes'] as List? ?? [];
-      if (participantes.isNotEmpty) {
-         _dividirEntre.updateAll((k, v) => false);
-         for (var p in participantes) {
-           final mid = p['miembro_id'] ?? p['miembro']?['id'];
-           if (mid != null) _dividirEntre[mid as String] = true;
-         }
+  Future<void> _loadMiembros() async {
+    final miembros = await repo.client.from('miembros').select('nombre').eq('parche_id', widget.parcheId);
+    setState(() {
+      miembrosNombres = (miembros as List).map((e) => e['nombre'] as String).toList();
+      if (miembrosNombres.isNotEmpty) quienPago = miembrosNombres.first;
+      for (var n in miembrosNombres) {
+        divisionCtrls[n] = TextEditingController();
       }
-    }
-    _cargarTasa();
+    });
   }
 
-  Future<void> _cargarTasa({bool forzar = false}) async {
-    if (esEdicion && !forzar && _tasaActual != null) return;
-    setState(() => _cargandoTasa = true);
-    try {
-      final tasa = forzar
-          ? await _currencyService.refreshRate(_moneda)
-          : await _currencyService.getRateToCop(_moneda);
-      if (mounted) setState(() { _tasaActual = tasa; });
-    } finally {
-      if (mounted) setState(() => _cargandoTasa = false);
-    }
+  @override
+  void dispose() {
+    descCtrl.dispose();
+    montoCtrl.dispose();
+    for (var c in divisionCtrls.values) c.dispose();
+    super.dispose();
   }
 
-  double get _montoCopCalculado {
-    final monto = double.tryParse(_montoCtrl.text.replaceAll(',', '.')) ?? 0;
-    return monto * (_tasaActual ?? 1);
+  int _totalDivisionMontos() {
+    int total = 0;
+    for (var ctrl in divisionCtrls.values) {
+      final v = int.tryParse(ctrl.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
+      total += v;
+    }
+    return total;
   }
 
   Future<void> _guardar() async {
-    if (_descCtrl.text.trim().isEmpty || _montoCtrl.text.isEmpty || _pagadoPorId == null) return;
-    final monto = double.tryParse(_montoCtrl.text.replaceAll(',', '.'));
-    if (monto == null || monto <= 0) return;
-    final participantesIds = _dividirEntre.entries.where((e) => e.value).map((e) => e.key).toList();
-    if (participantesIds.isEmpty) return;
+    if (descCtrl.text.isEmpty || montoCtrl.text.isEmpty || quienPago == null) return;
+    final monto = num.tryParse(montoCtrl.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
+    final montoCop = BalanceCalculator.toCop(monto, moneda);
 
-    setState(() => _guardando = true);
-    try {
-      if (esEdicion) {
-        await _repo.updateGasto(
-          gastoId: widget.gastoExistente!['id'],
-          descripcion: _descCtrl.text.trim(),
-          monto: monto,
-          moneda: _moneda,
-          pagadoPorId: _pagadoPorId!,
-          participantesIds: participantesIds,
-          tasaCambio: _tasaActual ?? 1,
-        );
-      } else {
-        await _repo.addGasto(
-          parcheId: widget.parcheId,
-          descripcion: _descCtrl.text.trim(),
-          monto: monto,
-          moneda: _moneda,
-          pagadoPorId: _pagadoPorId!,
-          participantesIds: participantesIds,
-          tasaCambio: _tasaActual ?? 1,
-        );
+    String divisionTipo = 'igual';
+    List<Map<String, dynamic>>? divisionData;
+
+    if (divisionDesigual) {
+      divisionTipo = 'montos';
+      divisionData = [];
+      for (var nombre in miembrosNombres) {
+        final ctrl = divisionCtrls[nombre];
+        final val = int.tryParse(ctrl?.text.replaceAll('.', '').replaceAll(',', '') ?? '0') ?? 0;
+        divisionData.add({'nombre': nombre, 'monto_cop': val});
       }
-      if (mounted) Navigator.pop(context, true);
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
-    } finally {
-      if (mounted) setState(() => _guardando = false);
+      final suma = divisionData.fold<int>(0, (s, e) => s + (e['monto_cop'] as int));
+      if (suma != montoCop) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('La suma desigual (\$$suma) debe ser igual al total (\$$montoCop)')),
+        );
+        return;
+      }
     }
+
+    await repo.addGasto(
+      parcheId: widget.parcheId,
+      descripcion: descCtrl.text,
+      montoOriginal: monto,
+      moneda: moneda,
+      quienPago: quienPago!,
+      divisionTipo: divisionTipo,
+      divisionData: divisionData,
+    );
+    if (mounted) Navigator.pop(context);
+  }
+
+  void _repartirIgual() {
+    if (miembrosNombres.isEmpty) return;
+    final monto = int.tryParse(montoCtrl.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
+    if (monto == 0) return;
+    final montoCop = BalanceCalculator.toCop(monto, moneda);
+    final porPersona = montoCop ~/ miembrosNombres.length;
+    final resto = montoCop % miembrosNombres.length;
+    setState(() {
+      for (int i = 0; i < miembrosNombres.length; i++) {
+        final n = miembrosNombres[i];
+        divisionCtrls[n]?.text = (porPersona + (i == 0 ? resto : 0)).toString();
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final totalDivision = _totalDivisionMontos();
+    final montoIngresado = int.tryParse(montoCtrl.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
+    final montoCopIngresado = BalanceCalculator.toCop(montoIngresado, moneda);
+
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 16, right: 16, top: 16),
       child: SingleChildScrollView(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text(esEdicion ? 'Editar gasto' : 'Añadir gasto', style: Theme.of(context).textTheme.titleLarge),
-              IconButton(onPressed: () => _cargarTasa(forzar: true), icon: const Icon(Icons.refresh), tooltip: 'Actualizar tasa'),
-            ]),
-            const SizedBox(height: 12),
-            TextField(controller: _descCtrl, decoration: const InputDecoration(labelText: 'Descripción', border: OutlineInputBorder())),
-            const SizedBox(height: 12),
+            const Text('Nuevo gasto', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            TextField(controller: descCtrl, decoration: const InputDecoration(labelText: 'Descripcion Ej: Cena 100k')),
+            const SizedBox(height: 8),
             Row(
               children: [
-                Expanded(flex: 2, child: TextField(controller: _montoCtrl, decoration: const InputDecoration(labelText: 'Monto', border: OutlineInputBorder()), keyboardType: TextInputType.number, onChanged: (_) => setState(() {}))),
+                Expanded(child: TextField(controller: montoCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Monto'), onChanged: (_) => setState(() {}))),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: _moneda,
-                    decoration: const InputDecoration(labelText: 'Moneda', border: OutlineInputBorder()),
-                    items: CurrencyService.monedasSoportadas.map((m) => DropdownMenuItem<String>(value: m['code'] as String, child: Text("${m['flag']} ${m['code']}"))).toList(),
-                    onChanged: (v) async {
-                      if (v != null) {
-                        setState(() => _moneda = v);
-                        await _cargarTasa(forzar: true);
-                      }
-                    },
-                  ),
+                DropdownButton<String>(
+                  value: moneda,
+                  items: ['COP','THB','VND','USD'].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+                  onChanged: (v) => setState(() => moneda = v!),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
-              child: _cargandoTasa
-                  ? const Row(children: [SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Text('Buscando tasa en vivo...')])
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(child: Text('1 $_moneda = ${_tasaActual?.toStringAsFixed(2)} COP', style: const TextStyle(fontWeight: FontWeight.bold))),
-                        Text('≈ \$${_montoCopCalculado.toStringAsFixed(0)} COP', style: TextStyle(color: Colors.blue.shade700, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-            ),
-            const SizedBox(height: 6),
-            Text('Fuente: open.er-api.com • Actualizado al cambiar moneda', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
-            const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _pagadoPorId,
-              decoration: const InputDecoration(labelText: '¿Quién pagó?', border: OutlineInputBorder()),
-              items: widget.miembros.map((m) => DropdownMenuItem<String>(value: m['id'] as String, child: Text(m['nombre']))).toList(),
-              onChanged: (v) => setState(() => _pagadoPorId = v),
+              value: quienPago,
+              decoration: const InputDecoration(labelText: 'Quien pago'),
+              items: miembrosNombres.map((n) => DropdownMenuItem(value: n, child: Text(n))).toList(),
+              onChanged: (v) => setState(() => quienPago = v),
             ),
-            const SizedBox(height: 16),
-            const Text('Dividir entre:', style: TextStyle(fontWeight: FontWeight.bold)),
-            Row(children: [TextButton(onPressed: () => setState(() => _dividirEntre.updateAll((k, v) => true)), child: const Text('Todos')), TextButton(onPressed: () => setState(() => _dividirEntre.updateAll((k, v) => false)), child: const Text('Ninguno'))]),
-            ...widget.miembros.map((m) {
-              final id = m['id'] as String;
-              return CheckboxListTile(value: _dividirEntre[id] ?? false, title: Text(m['nombre']), controlAffinity: ListTileControlAffinity.leading, onChanged: (v) => setState(() => _dividirEntre[id] = v ?? false));
-            }),
             const SizedBox(height: 12),
-            ElevatedButton(onPressed: _guardando ? null : _guardar, child: _guardando ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Text(esEdicion ? 'Actualizar gasto' : 'Guardar gasto')),
+            SwitchListTile(
+              title: const Text('Division desigual por montos'),
+              subtitle: Text(divisionDesigual ? 'Ej: Will \$80k / Karoll \$20k' : 'Reparto igual (MVP1)'),
+              value: divisionDesigual,
+              onChanged: (v) => setState(() => divisionDesigual = v),
+            ),
+            if (divisionDesigual) ...[
+              const Divider(),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Reparto (Total: \$$montoCopIngresado COP)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  TextButton(onPressed: _repartirIgual, child: const Text('Repartir igual')),
+                ],
+              ),
+              ...miembrosNombres.map((nombre) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    SizedBox(width: 80, child: Text(nombre, style: const TextStyle(fontWeight: FontWeight.w500))),
+                    Expanded(
+                      child: TextField(
+                        controller: divisionCtrls[nombre],
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          labelText: 'Monto \$nombre',
+                          prefixText: '\$ ',
+                          suffixText: 'COP',
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+              const SizedBox(height: 4),
+              Text(
+                'Suma: \$$totalDivision / Total: \$$montoCopIngresado \${totalDivision == montoCopIngresado ? "OK" : "Debe coincidir"}',
+                style: TextStyle(fontSize: 12, color: totalDivision == montoCopIngresado ? Colors.green : Colors.red, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(width: double.infinity, child: FilledButton(onPressed: _guardar, child: const Text('Guardar gasto'))),
             const SizedBox(height: 20),
           ],
         ),

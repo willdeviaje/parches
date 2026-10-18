@@ -12,7 +12,7 @@ class DetalleParchePage extends StatefulWidget {
 }
 
 class _DetalleParchePageState extends State<DetalleParchePage> {
-  final _repo = ParchesRepository(Supabase.instance.client);
+  late final ParchesRepository _repo;
   List<Map<String, dynamic>> _miembros = [];
   List<Map<String, dynamic>> _gastos = [];
   bool _loading = true;
@@ -20,19 +20,24 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
   @override
   void initState() {
     super.initState();
+    _repo = ParchesRepository(Supabase.instance.client);
     _cargarTodo();
   }
 
   Future<void> _cargarTodo() async {
     setState(() => _loading = true);
-    final miembros = await _repo.getMiembros(widget.parche['id']);
-    final gastos = await _repo.getGastos(widget.parche['id']);
-    if (mounted) {
-      setState(() {
-        _miembros = miembros;
-        _gastos = gastos;
-        _loading = false;
-      });
+    try {
+      final miembros = await _repo.getMiembros(widget.parche['id']);
+      final gastos = await _repo.getGastos(widget.parche['id']);
+      if (mounted) {
+        setState(() {
+          _miembros = miembros;
+          _gastos = gastos;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -42,7 +47,7 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('Añadir miembro'),
-        content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'Ej: William, Ana')),
+        content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: 'Ej: William, Ana')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancelar')),
           ElevatedButton(onPressed: () => Navigator.pop(c, ctrl.text.trim()), child: const Text('Añadir')),
@@ -60,7 +65,7 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
   }
 
   Future<void> _confirmarBorrarMiembro(Map<String, dynamic> m) async {
-    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: Text('¿Borrar ${m['nombre']}?'), content: const Text('Se borrará del parche. Sus gastos quedarán.'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('No')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Borrar'))]));
+    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: Text('¿Borrar ${m['nombre']}?'), content: const Text('Se borrará del parche.'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('No')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Borrar'))]));
     if (ok == true) {
       await _repo.deleteMiembro(m['id']);
       await _cargarTodo();
@@ -68,7 +73,8 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
   }
 
   Future<void> _confirmarBorrarGasto(Map<String, dynamic> g) async {
-    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: const Text('¿Borrar gasto?'), content: Text('${g['descripcion']} - ${g['monto']} ${g['moneda']}'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('No')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Borrar'))]));
+    final monto = g['monto_original'] ?? g['monto_cop'] ?? 0;
+    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: const Text('¿Borrar gasto?'), content: Text('${g['descripcion']} - $monto ${g['moneda']}'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('No')), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text('Borrar'))]));
     if (ok == true) {
       await _repo.deleteGasto(g['id']);
       await _cargarTodo();
@@ -76,7 +82,7 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
   }
 
   Future<void> _confirmarBorrarParche() async {
-    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: const Text('¿Borrar parche?'), content: Text('Se borrará "${widget.parche['nombre']}" y todo lo que contiene. Esta acción no se puede deshacer.'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c, true), child: const Text('Borrar parche'))]));
+    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: const Text('¿Borrar parche?'), content: Text('Se borrará "${widget.parche['nombre']}" y todo lo que contiene.'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c, true), child: const Text('Borrar parche'))]));
     if (ok == true) {
       await _repo.deleteParche(widget.parche['id']);
       if (mounted) Navigator.pop(context, true);
@@ -85,14 +91,11 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
 
   @override
   Widget build(BuildContext context) {
-    final total = _gastos.fold<double>(0, (sum, g) => sum + (g['monto'] as num).toDouble());
+    final total = _gastos.fold<double>(0, (sum, g) => sum + ((g['monto_original'] ?? g['monto_cop'] ?? 0) as num).toDouble());
+    final balance = _miembros.isNotEmpty && _gastos.isNotEmpty ? _repo.calcularBalance(_miembros, _gastos) : <String, double>{};
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.parche['nombre']),
-        actions: [
-          IconButton(icon: const Icon(Icons.delete_forever), onPressed: _confirmarBorrarParche),
-        ],
-      ),
+      appBar: AppBar(title: Text(widget.parche['nombre']), actions: [IconButton(icon: const Icon(Icons.delete_forever), onPressed: _confirmarBorrarParche)]),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -108,34 +111,39 @@ class _DetalleParchePageState extends State<DetalleParchePage> {
                   const SizedBox(height: 20),
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Miembros', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), TextButton.icon(onPressed: _mostrarAddMiembro, icon: const Icon(Icons.person_add), label: const Text('Añadir'))]),
                   const SizedBox(height: 8),
-                  if (_miembros.isEmpty) const Text('Añade miembros: William, Ana, Juan')
-                  else Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: _miembros.map((m) => Chip(label: Text(m['nombre']), deleteIcon: const Icon(Icons.close, size: 18), onDeleted: () => _confirmarBorrarMiembro(m))).toList(),
-                  ),
+                  if (_miembros.isEmpty) const Text('Añade miembros: William, Ana, Juan') else Wrap(spacing: 8, runSpacing: 8, children: _miembros.map((m) => Chip(label: Text(m['nombre']), deleteIcon: const Icon(Icons.close, size: 18), onDeleted: () => _confirmarBorrarMiembro(m))).toList()),
                   const SizedBox(height: 20),
                   const Text('Balance', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
-                    child: Text(_gastos.isEmpty ? 'Añade gastos para ver quien debe qué' : 'Balance calculado entre ${_miembros.length} personas'),
-                  ),
+                  if (balance.isEmpty)
+                    Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)), child: const Text('Añade gastos para ver quien debe qué'))
+                  else
+                    ...balance.entries.map((e) {
+                      final valor = e.value;
+                      final esPositivo = valor > 0;
+                      return Card(
+                        color: esPositivo ? Colors.green.shade50 : Colors.red.shade50,
+                        child: ListTile(
+                          title: Text(e.key),
+                          subtitle: Text(esPositivo ? 'Le deben' : 'Debe'),
+                          trailing: Text('${esPositivo ? '+' : ''}\$${valor.toStringAsFixed(0)}', style: TextStyle(fontWeight: FontWeight.bold, color: esPositivo ? Colors.green : Colors.red)),
+                        ),
+                      );
+                    }),
                   const SizedBox(height: 20),
                   const Text('Gastos', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
-                  if (_gastos.isEmpty) const Text('Sin gastos aún')
-                  else ..._gastos.map((g) => Card(
-                        child: ListTile(
-                          title: Text(g['descripcion']),
-                          subtitle: Text("${g['pagado_por']} • ${g['monto']} ${g['moneda']}"),
-                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                            Text("\$${g['monto']}"),
-                            IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => _confirmarBorrarGasto(g)),
-                          ]),
-                        ),
-                      )),
+                  if (_gastos.isEmpty) const Text('Sin gastos aún') else ..._gastos.map((g) {
+                    final monto = g['monto_original'] ?? g['monto_cop'] ?? 0;
+                    return Card(
+                      child: ListTile(
+                        title: Text(g['descripcion'] ?? ''),
+                        subtitle: Text("${g['quien_pago']} • $monto ${g['moneda']}"),
+                        trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text("\$$monto"), IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => _confirmarBorrarGasto(g))]),
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 80),
                 ],
               ),
             ),

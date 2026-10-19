@@ -1,41 +1,41 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../data/parches_repository.dart';
-import 'detalle_parche_page.dart';
+import '../data/group_repository.dart';
+import 'group_detail_page.dart';
 
-class HomeParchesPage extends StatefulWidget {
-  const HomeParchesPage({super.key});
+class HomeGroupsPage extends StatefulWidget {
+  const HomeGroupsPage({super.key});
 
   @override
-  State<HomeParchesPage> createState() => _HomeParchesPageState();
+  State<HomeGroupsPage> createState() => _HomeGroupsPageState();
 }
 
-class _HomeParchesPageState extends State<HomeParchesPage> {
-  late final ParchesRepository repo;
-  List<Map<String, dynamic>> parches = [];
+class _HomeGroupsPageState extends State<HomeGroupsPage> {
+  late final GroupRepository repo;
+  List<Map<String, dynamic>> groups = [];
   bool loading = true;
 
   @override
   void initState() {
     super.initState();
-    repo = ParchesRepository(Supabase.instance.client);
+    repo = GroupRepository(Supabase.instance.client);
     _refresh();
   }
 
   Future<void> _refresh() async {
     setState(() => loading = true);
-    final data = await repo.getParches();
+    final data = await repo.getGroups();
     if (mounted) {
       setState(() {
-        parches = data;
+        groups = data;
         loading = false;
       });
     }
   }
 
-  Future<void> _crearParche() async {
+  Future<void> _createGroup() async {
     final ctrl = TextEditingController();
-    final nombre = await showDialog<String>(
+    final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('Nuevo parche'),
@@ -46,8 +46,8 @@ class _HomeParchesPageState extends State<HomeParchesPage> {
         ],
       ),
     );
-    if (nombre == null || nombre.isEmpty) return;
-    await repo.createParche(nombre);
+    if (name == null || name.isEmpty) return;
+    await repo.createGroup(name);
     await _refresh();
   }
 
@@ -59,21 +59,21 @@ class _HomeParchesPageState extends State<HomeParchesPage> {
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _refresh,
-              child: parches.isEmpty
+              child: groups.isEmpty
                   ? ListView(children: const [SizedBox(height: 100), Center(child: Text('No hay parches\nDesliza para recargar'))])
                   : ListView.builder(
-                      itemCount: parches.length,
+                      itemCount: groups.length,
                       itemBuilder: (c, i) {
-                        final p = parches[i];
+                        final g = groups[i];
                         return Card(
                           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           child: ListTile(
-                            title: Text(p['nombre']),
-                            subtitle: Text('Creado ${p['created_at'].toString().substring(0, 10)}'),
+                            title: Text(g['nombre']),
+                            subtitle: Text('Creado ${g['created_at'].toString().substring(0, 10)}'),
                             trailing: const Icon(Icons.chevron_right),
                             onTap: () => Navigator.push(
                               context,
-                              MaterialPageRoute(builder: (_) => DetalleParchePage(parche: p)),
+                              MaterialPageRoute(builder: (_) => GroupDetailPage(group: g)),
                             ).then((_) => _refresh()),
                           ),
                         );
@@ -81,7 +81,7 @@ class _HomeParchesPageState extends State<HomeParchesPage> {
                     ),
             ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _crearParche,
+        onPressed: _createGroup,
         icon: const Icon(Icons.add),
         label: const Text('Nuevo parche'),
       ),

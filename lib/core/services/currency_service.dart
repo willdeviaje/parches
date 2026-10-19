@@ -1,100 +1,56 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
 class CurrencyService {
-  // API gratuita, sin key y con CORS permitido para web
-  // https://www.exchangerate-api.com - 1500 req/mes gratis, endpoint open
-  // Backup: open.er-api.com
-
-  static const monedasSoportadas = [
-    {'code': 'COP', 'name': 'Peso Colombiano', 'symbol': '\$', 'flag': '🇨🇴'},
-    {'code': 'USD', 'name': 'Dólar', 'symbol': 'US\$', 'flag': '🇺🇸'},
-    {'code': 'THB', 'name': 'Baht Tailandés', 'symbol': '฿', 'flag': '🇹🇭'},
-    {'code': 'VND', 'name': 'Dong Vietnamita', 'symbol': '₫', 'flag': '🇻🇳'},
-    {'code': 'EUR', 'name': 'Euro', 'symbol': '€', 'flag': '🇪🇺'},
+  static const List<Map<String, String>> monedasSoportadas = [
+    {'code': 'COP', 'flag': '🇨🇴', 'name': 'Peso Colombiano'},
+    {'code': 'USD', 'flag': '🇺🇸', 'name': 'Dólar'},
+    {'code': 'THB', 'flag': '🇹🇭', 'name': 'Baht Tailandés'},
+    {'code': 'VND', 'flag': '🇻🇳', 'name': 'Dong Vietnamita'},
   ];
 
-  // Cache para no pegar a la API
-  final Map<String, double> _cache = {};
-  DateTime? _lastFetch;
-  static const _cacheMinutes = 30;
+  static List<Map<String, String>> get supportedCurrencies => monedasSoportadas;
 
-  // Fallback por si no hay internet
-  static const _fallbackRates = {
-    'USD': 4150.0,
-    'THB': 115.0,
-    'VND': 0.17,
-    'EUR': 4500.0,
-    'COP': 1.0,
-  };
+  final Map<String, double> _cache = {'COP': 1.0};
+  final Map<String, DateTime> _cacheTime = {};
 
-  bool get _isCacheValid {
-    if (_lastFetch == null) return false;
-    return DateTime.now().difference(_lastFetch!).inMinutes < _cacheMinutes;
+  Future<double> getRateToCop(String currency) async {
+    final code = currency.toUpperCase();
+    if (code == 'COP') return 1.0;
+    if (_cache.containsKey(code) && _cacheTime[code] != null && DateTime.now().difference(_cacheTime[code]!).inMinutes < 60) {
+      return _cache[code]!;
+    }
+    return await refreshRate(code);
   }
 
-  Future<double> getRateToCop(String fromCurrency) async {
-    if (fromCurrency == 'COP') return 1.0;
+  Future<double> getRate(String currency) => getRateToCop(currency);
 
-    // Usar cache si es válido
-    if (_isCacheValid && _cache.containsKey(fromCurrency)) {
-      print('💰 Tasa desde cache: $fromCurrency -> ${_cache[fromCurrency]} COP');
-      return _cache[fromCurrency]!;
-    }
-
-    // Intento 1: open.er-api.com (la más estable para web)
+  Future<double> refreshRate(String currency) async {
+    final code = currency.toUpperCase();
+    if (code == 'COP') return 1.0;
     try {
-      print('🌐 Buscando tasa $fromCurrency -> COP en open.er-api.com');
-      final url = Uri.parse('https://open.er-api.com/v6/latest/$fromCurrency');
-      final res = await http.get(url);
+      if (kDebugMode) debugPrint('Fetching rate for $code');
+      final res = await http.get(Uri.parse('https://open.er-api.com/v6/latest/$code')).timeout(const Duration(seconds: 8));
+      if (kDebugMode) debugPrint('Rate response ${res.statusCode} for $code');
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        if (data['result'] == 'success' && data['rates'] != null && data['rates']['COP'] != null) {
-          final rate = (data['rates']['COP'] as num).toDouble();
-          _cache[fromCurrency] = rate;
-          _lastFetch = DateTime.now();
-          print('✅ Tasa encontrada: 1 $fromCurrency = $rate COP');
+        final rates = data['rates'] as Map<String, dynamic>?;
+        final copRate = rates?['COP'] as num?;
+        if (copRate != null) {
+          final rate = copRate.toDouble();
+          if (kDebugMode) debugPrint('Rate $code -> COP: $rate');
+          _cache[code] = rate;
+          _cacheTime[code] = DateTime.now();
           return rate;
         }
       }
     } catch (e) {
-      print('❌ Error open.er-api: $e');
+      if (kDebugMode) debugPrint('Error fetching rate for $code: $e');
     }
-
-    // Intento 2: exchangerate-api.com v4 (también con CORS)
-    try {
-      print('🌐 Intento 2: exchangerate-api.com');
-      final url2 = Uri.parse('https://api.exchangerate-api.com/v4/latest/$fromCurrency');
-      final res2 = await http.get(url2);
-      if (res2.statusCode == 200) {
-        final data2 = jsonDecode(res2.body);
-        if (data2['rates'] != null && data2['rates']['COP'] != null) {
-          final rate = (data2['rates']['COP'] as num).toDouble();
-          _cache[fromCurrency] = rate;
-          _lastFetch = DateTime.now();
-          print('✅ Tasa encontrada (intento2): 1 $fromCurrency = $rate COP');
-          return rate;
-        }
-      }
-    } catch (e) {
-      print('❌ Error intento 2: $e');
-    }
-
-    // Fallback
-    print('⚠️ Usando fallback para $fromCurrency');
-    final fallback = _fallbackRates[fromCurrency] ?? 1.0;
-    _cache[fromCurrency] = fallback;
-    return fallback;
-  }
-
-  // Fuerza refresh ignorando cache
-  Future<double> refreshRate(String fromCurrency) async {
-    _cache.remove(fromCurrency);
-    _lastFetch = null;
-    return getRateToCop(fromCurrency);
-  }
-
-  double convertirACop(double montoOriginal, double tasa) {
-    return montoOriginal * tasa;
+    const fallback = {'USD': 4100.0, 'THB': 115.0, 'VND': 0.16};
+    final fb = fallback[code] ?? 1.0;
+    if (kDebugMode) debugPrint('Using fallback rate for $code: $fb');
+    return fb;
   }
 }

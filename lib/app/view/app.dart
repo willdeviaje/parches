@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../features/parches/view/home_parches_page.dart';
+import '../../features/parches/view/home_groups_page.dart';
 
 class App extends StatelessWidget {
   const App({super.key});
@@ -8,7 +8,7 @@ class App extends StatelessWidget {
     return MaterialApp(
       title: 'Parches',
       theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepOrange)),
-      home: const HomeParchesPage(),
+      home: const HomeGroupsPage(),
       debugShowCheckedModeBanner: false,
     );
   }

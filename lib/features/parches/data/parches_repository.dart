@@ -1,116 +1,97 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../gastos/logic/balance_calculator.dart';
 
 class ParchesRepository {
   final SupabaseClient _client;
   ParchesRepository(this._client);
-
   SupabaseClient get client => _client;
 
-  // --- PARCHES ---
   Future<List<Map<String, dynamic>>> getParches() async {
-    final data = await _client.from('parches').select().order('created_at', ascending: false);
-    return List<Map<String, dynamic>>.from(data);
-  }
-
-  Stream<List<Map<String, dynamic>>> watchParches() {
-    return _client.from('parches').stream(primaryKey: ['id']).order('created_at', ascending: false);
-  }
-
-  Future<String> crearParche(String nombre) async {
-    try {
-      // Fix: tabla parches en Supabase MVP1 solo tiene nombre, no tipo
-      final res = await _client.from('parches').insert({'nombre': nombre}).select('id').single();
-      return res['id'] as String;
-    } catch (e) {
-      // Fallback por si la tabla sí tiene 'tipo' en otra rama
-      if (e.toString().contains('tipo')) {
-        final res = await _client.from('parches').insert({'nombre': nombre}).select('id').single();
-        return res['id'] as String;
-      }
-      rethrow;
-    }
-  }
-
-  Future<void> createParche(String nombre) async {
-    await crearParche(nombre);
-  }
-
-  // --- MIEMBROS ---
-  Future<List<Map<String, dynamic>>> getMiembros(String parcheId) async {
-    final res = await _client.from('miembros').select().eq('parche_id', parcheId).order('created_at');
+    final res = await _client.from('parches').select().order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(res);
   }
 
-  Future<void> addMiembro({required String parcheId, required String nombre}) async {
-    await _client.from('miembros').insert({'parche_id': parcheId, 'nombre': nombre.trim()});
+  Future<Map<String, dynamic>> createParche(String nombre) async {
+    final res = await _client.from('parches').insert({'nombre': nombre.trim()}).select().single();
+    return res;
   }
 
-  // compatibilidad con llamada posicional vieja: addMiembroOld(String, String)
-  Future<void> addMiembroPosicional(String parcheId, String nombre) async {
-    await addMiembro(parcheId: parcheId, nombre: nombre);
+  Future<String> crearParche(String nombre) async {
+    final res = await createParche(nombre);
+    return res['id'] as String;
+  }
+
+  Future<void> deleteParche(String id) async {
+    try { await _client.from('gastos').delete().eq('parche_id', id); } catch (_) {}
+    try { await _client.from('miembros').delete().eq('parche_id', id); } catch (_) {}
+    await _client.from('parches').delete().eq('id', id);
+  }
+
+  Future<List<Map<String, dynamic>>> getMiembros(String parcheId) async {
+    final res = await _client.from('miembros').select().eq('parche_id', parcheId).order('created_at');
+    return List<Map<String, dynamic>>.from(res);
   }
 
   Stream<List<Map<String, dynamic>>> watchMiembros(String parcheId) {
     return _client.from('miembros').stream(primaryKey: ['id']).eq('parche_id', parcheId).order('created_at');
   }
 
-  // --- GASTOS ---
+  Future<void> addMiembro({required String parcheId, required String nombre}) async {
+    final limpio = nombre.trim();
+    if (limpio.isEmpty) return;
+    await _client.from('miembros').insert({'parche_id': parcheId, 'nombre': limpio});
+  }
+
+  Future<void> deleteMiembro(String id) async {
+    await _client.from('miembros').delete().eq('id', id);
+  }
+
+  Future<List<Map<String, dynamic>>> getGastos(String parcheId) async {
+    final res = await _client.from('gastos').select().eq('parche_id', parcheId).order('created_at', ascending: false);
+    return List<Map<String, dynamic>>.from(res);
+  }
+
   Stream<List<Map<String, dynamic>>> watchGastos(String parcheId) {
     return _client.from('gastos').stream(primaryKey: ['id']).eq('parche_id', parcheId).order('created_at', ascending: false);
   }
 
-  Future<List<Map<String, dynamic>>> getGastosFuture(String parcheId) async {
-    final data = await _client.from('gastos').select().eq('parche_id', parcheId).order('created_at', ascending: false);
-    return List<Map<String, dynamic>>.from(data);
-  }
-
+  // COMPATIBLE CON TODAS LAS VERSIONES DE AddGastoSheet
   Future<void> addGasto({
     required String parcheId,
     required String descripcion,
-    required num montoOriginal,
-    required String moneda,
-    required String quienPago,
-    String categoria = 'general',
-    String divisionTipo = 'igual',
-    List<Map<String, dynamic>>? divisionData,
+    double? monto,
+    num? montoOriginal,
+    String? moneda,
+    String? pagadoPor,
+    String? quienPago,
+    String? quienPagoId,
+    String? pagadoPorId,
+    String? categoria,
+    String? divisionTipo,
+    dynamic divisionData,
+    List<String>? participantesIds,
   }) async {
-    final montoCop = BalanceCalculator.toCop(montoOriginal, moneda);
-    final payload = {
+    final montoFinal = (montoOriginal ?? monto ?? 0).toDouble();
+    final pagadorFinal = (quienPago ?? pagadoPor ?? '').trim();
+    
+    await _client.from('gastos').insert({
       'parche_id': parcheId,
-      'descripcion': descripcion,
-      'monto_original': montoOriginal,
-      'moneda': moneda,
-      'monto_cop': montoCop,
-      'quien_pago': quienPago,
-      'categoria': categoria,
-      'division_tipo': divisionTipo,
-      'division_data': divisionData,
-    };
-    try {
-      await _client.from('gastos').insert(payload);
-    } catch (e) {
-      // Fallback si las columnas nuevas no existen aún (MVP1)
-      if (e.toString().contains('division_tipo') || e.toString().contains('division_data')) {
-        await _client.from('gastos').insert({
-          'parche_id': parcheId,
-          'descripcion': descripcion,
-          'monto_original': montoOriginal,
-          'moneda': moneda,
-          'monto_cop': montoCop,
-          'quien_pago': quienPago,
-          'categoria': categoria,
-        });
-      } else {
-        rethrow;
-      }
-    }
+      'descripcion': descripcion.trim(),
+      'monto_original': montoFinal,
+      'moneda': moneda ?? 'COP',
+      'monto_cop': montoFinal.toInt(),
+      'quien_pago': pagadorFinal,
+      'categoria': categoria ?? 'general',
+    });
   }
 
-  Future<Map<String, int>> getTotales(String parcheId) async {
-    final gastos = await _client.from('gastos').select('monto_cop').eq('parche_id', parcheId);
-    final miembros = await _client.from('miembros').select('id').eq('parche_id', parcheId);
-    final total = (gastos as List).fold<int>(0, (s, g) => s + (g['monto_cop'] as int));
-    return {'total_cop': total, 'total_miembros': (miembros as List).length};
+  Future<void> deleteGasto(String id) async {
+    await _client.from('gastos').delete().eq('id', id);
+  }
+
+  Future<Map<String, dynamic>> calcularBalanceDetallado(String parcheId) async {
+    final miembros = await getMiembros(parcheId);
+    final gastos = await getGastos(parcheId);
+    final total = gastos.fold<int>(0, (s, g) => s + ((g['monto_cop'] as int?) ?? (g['monto_original'] as num?)?.toInt() ?? 0));
+    return {'miembros': miembros, 'gastos': gastos, 'total': total};
   }
 }
